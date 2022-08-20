@@ -555,7 +555,9 @@ checksum = "d87c48c02e0dc5e3b849a2041db3029fd066650f8f717c07bf8ed78ccb895cac"
 dependencies = [
  "http",
  "hyper",
+ "log",
  "rustls",
+ "rustls-native-certs",
  "tokio",
  "tokio-rustls",
 ]
@@ -1079,15 +1081,19 @@ dependencies = [
  "fast-socks5",
  "futures-util",
  "hyper",
+ "hyper-rustls",
  "hyper-tungstenite",
  "lazy_static",
  "minify-html",
  "postgrest",
  "reqwest",
+ "rustls",
+ "rustls-pemfile",
  "serde",
  "serde_json",
  "thiserror",
  "tokio",
+ "tokio-rustls",
  "tokio-tungstenite",
  "tungstenite",
  "url",
@@ -1127,6 +1133,18 @@ dependencies = [
  "ring",
  "sct",
  "webpki",
+]
+
+[[package]]
+name = "rustls-native-certs"
+version = "0.6.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "0167bac7a9f490495f3c33013e7722b53cb087ecbe082fb0c6387c96f634ea50"
+dependencies = [
+ "openssl-probe",
+ "rustls-pemfile",
+ "schannel",
+ "security-framework",
 ]
 
 [[package]]

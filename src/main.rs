@@ -1,15 +1,26 @@
 use cached::proc_macro::io_cached;
 use cached::AsyncRedisCache;
+use core::task::{Context, Poll};
 use fast_socks5::client::Socks5Stream;
+use futures_util::ready;
 use futures_util::StreamExt;
-use hyper::{http::HeaderValue, Body, Request, Response, StatusCode, Uri};
+use hyper::server::accept::Accept;
+use hyper::server::conn::{AddrIncoming, AddrStream};
+use hyper::service::{make_service_fn, service_fn};
+use hyper::{http::HeaderValue, Body, Request, Response, Server, StatusCode, Uri};
 use hyper_tungstenite::HyperWebsocket;
 use lazy_static::lazy_static;
 use postgrest::Postgrest;
 use serde::Deserialize;
-use std::convert::Infallible;
+use std::future::Future;
+use std::pin::Pin;
+use std::sync::Arc;
+use std::vec::Vec;
+use std::{fs, io, sync};
 use thiserror::Error;
+use tokio::io::{AsyncRead, AsyncWrite, ReadBuf};
 use tokio::{join, try_join};
+use tokio_rustls::rustls::ServerConfig;
 use url::Url;
 
 type Error = Box<dyn std::error::Error + Send + Sync + 'static>;
@@ -57,11 +68,15 @@ async fn get_target_sub(host: String) -> Result<String, LoadingTargetError> {
         .execute()
         .await;
     if resp.is_err() {
-        Err(LoadingTargetError::SupabaseError(resp.unwrap_err().to_string()))
+        Err(LoadingTargetError::SupabaseError(
+            resp.unwrap_err().to_string(),
+        ))
     } else {
         let data = resp.unwrap().json::<Vec<SupabaseTargetInfo>>().await;
         if data.is_err() {
-            Err(LoadingTargetError::SupabaseError(data.unwrap_err().to_string()))
+            Err(LoadingTargetError::SupabaseError(
+                data.unwrap_err().to_string(),
+            ))
         } else {
             let data = data.unwrap();
             if data.is_empty() {
@@ -219,15 +234,168 @@ async fn serve_websocket(
     Ok(())
 }
 
+fn error(err: String) -> io::Error {
+    io::Error::new(io::ErrorKind::Other, err)
+}
+
 #[tokio::main]
 async fn main() -> Result<(), Error> {
     dotenv::dotenv().ok();
     let addr: std::net::SocketAddr = "127.0.0.1:3000".parse()?;
     println!("Listening on http://{}", addr);
-    hyper::Server::bind(&addr)
-        .serve(hyper::service::make_service_fn(|_connection| async {
-            Ok::<_, Infallible>(hyper::service::service_fn(handle_request))
-        }))
+    let tls_cfg = {
+        let certs = load_certs(dotenv::var("TLS_CERT_CHAIN_PATH").expect("Missing tls cert chain path").as_str())?;
+        let key = load_private_key(dotenv::var("TLS_KEY_PATH").expect("Missing tls key path").as_str())?;
+        // Do not use client certificate authentication.
+        let mut cfg = rustls::ServerConfig::builder()
+            .with_safe_defaults()
+            .with_no_client_auth()
+            .with_single_cert(certs, key)
+            .map_err(|e| error(format!("{}", e)))?;
+        // Configure ALPN to accept HTTP/2, HTTP/1.1 in that order.
+        cfg.alpn_protocols = vec![b"h2".to_vec(), b"http/1.1".to_vec()];
+        sync::Arc::new(cfg)
+    };
+
+    let incoming = AddrIncoming::bind(&addr)?;
+    let service = make_service_fn(|_| async { Ok::<_, io::Error>(service_fn(handle_request)) });
+    Server::builder(TlsAcceptor::new(tls_cfg, incoming))
+        .serve(service)
         .await?;
     Ok(())
+}
+
+enum State {
+    Handshaking(tokio_rustls::Accept<AddrStream>),
+    Streaming(tokio_rustls::server::TlsStream<AddrStream>),
+}
+
+// tokio_rustls::server::TlsStream doesn't expose constructor methods,
+// so we have to TlsAcceptor::accept and handshake to have access to it
+// TlsStream implements AsyncRead/AsyncWrite handshaking tokio_rustls::Accept first
+pub struct TlsStream {
+    state: State,
+}
+
+impl TlsStream {
+    fn new(stream: AddrStream, config: Arc<ServerConfig>) -> TlsStream {
+        let accept = tokio_rustls::TlsAcceptor::from(config).accept(stream);
+        TlsStream {
+            state: State::Handshaking(accept),
+        }
+    }
+}
+
+impl AsyncRead for TlsStream {
+    fn poll_read(
+        self: Pin<&mut Self>,
+        cx: &mut Context,
+        buf: &mut ReadBuf,
+    ) -> Poll<io::Result<()>> {
+        let pin = self.get_mut();
+        match pin.state {
+            State::Handshaking(ref mut accept) => match ready!(Pin::new(accept).poll(cx)) {
+                Ok(mut stream) => {
+                    let result = Pin::new(&mut stream).poll_read(cx, buf);
+                    pin.state = State::Streaming(stream);
+                    result
+                }
+                Err(err) => Poll::Ready(Err(err)),
+            },
+            State::Streaming(ref mut stream) => Pin::new(stream).poll_read(cx, buf),
+        }
+    }
+}
+
+impl AsyncWrite for TlsStream {
+    fn poll_write(
+        self: Pin<&mut Self>,
+        cx: &mut Context<'_>,
+        buf: &[u8],
+    ) -> Poll<io::Result<usize>> {
+        let pin = self.get_mut();
+        match pin.state {
+            State::Handshaking(ref mut accept) => match ready!(Pin::new(accept).poll(cx)) {
+                Ok(mut stream) => {
+                    let result = Pin::new(&mut stream).poll_write(cx, buf);
+                    pin.state = State::Streaming(stream);
+                    result
+                }
+                Err(err) => Poll::Ready(Err(err)),
+            },
+            State::Streaming(ref mut stream) => Pin::new(stream).poll_write(cx, buf),
+        }
+    }
+
+    fn poll_flush(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<io::Result<()>> {
+        match self.state {
+            State::Handshaking(_) => Poll::Ready(Ok(())),
+            State::Streaming(ref mut stream) => Pin::new(stream).poll_flush(cx),
+        }
+    }
+
+    fn poll_shutdown(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<io::Result<()>> {
+        match self.state {
+            State::Handshaking(_) => Poll::Ready(Ok(())),
+            State::Streaming(ref mut stream) => Pin::new(stream).poll_shutdown(cx),
+        }
+    }
+}
+
+pub struct TlsAcceptor {
+    config: Arc<ServerConfig>,
+    incoming: AddrIncoming,
+}
+
+impl TlsAcceptor {
+    pub fn new(config: Arc<ServerConfig>, incoming: AddrIncoming) -> TlsAcceptor {
+        TlsAcceptor { config, incoming }
+    }
+}
+
+impl Accept for TlsAcceptor {
+    type Conn = TlsStream;
+    type Error = io::Error;
+
+    fn poll_accept(
+        self: Pin<&mut Self>,
+        cx: &mut Context<'_>,
+    ) -> Poll<Option<Result<Self::Conn, Self::Error>>> {
+        let pin = self.get_mut();
+        match ready!(Pin::new(&mut pin.incoming).poll_accept(cx)) {
+            Some(Ok(sock)) => Poll::Ready(Some(Ok(TlsStream::new(sock, pin.config.clone())))),
+            Some(Err(e)) => Poll::Ready(Some(Err(e))),
+            None => Poll::Ready(None),
+        }
+    }
+}
+
+// Load public certificate from file.
+fn load_certs(filename: &str) -> io::Result<Vec<rustls::Certificate>> {
+    // Open certificate file.
+    let certfile = fs::File::open(filename)
+        .map_err(|e| error(format!("failed to open {}: {}", filename, e)))?;
+    let mut reader = io::BufReader::new(certfile);
+
+    // Load and return certificate.
+    let certs = rustls_pemfile::certs(&mut reader)
+        .map_err(|_| error("failed to load certificate".into()))?;
+    Ok(certs.into_iter().map(rustls::Certificate).collect())
+}
+
+// Load private key from file.
+fn load_private_key(filename: &str) -> io::Result<rustls::PrivateKey> {
+    // Open keyfile.
+    let keyfile = fs::File::open(filename)
+        .map_err(|e| error(format!("failed to open {}: {}", filename, e)))?;
+    let mut reader = io::BufReader::new(keyfile);
+
+    // Load and return a single private key.
+    let keys = rustls_pemfile::rsa_private_keys(&mut reader)
+        .map_err(|_| error("failed to load private key".into()))?;
+    if keys.len() != 1 {
+        return Err(error("expected a single private key".into()));
+    }
+
+    Ok(rustls::PrivateKey(keys[0].clone()))
 }
