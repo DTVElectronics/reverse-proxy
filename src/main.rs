@@ -1,11 +1,14 @@
 use cached::proc_macro::cached;
+use dotenv;
 use fast_socks5::client::Socks5Stream;
 use fast_socks5::Result;
-use futures::stream::StreamExt;
+use futures_util::StreamExt;
 use hyper::{http::HeaderValue, Body, Request, Response, StatusCode, Uri};
 use hyper_tungstenite::HyperWebsocket;
 use lazy_static::lazy_static;
-use std::{collections::HashMap, convert::Infallible};
+use postgrest::Postgrest;
+use serde::Deserialize;
+use std::convert::Infallible;
 use tokio::{join, try_join};
 use url::Url;
 
@@ -18,16 +21,40 @@ lazy_static! {
         .expect("Failed to generated request client!");
 }
 
+#[derive(Deserialize)]
+struct SupabaseTargetInfo {
+    //host: String,
+    target: String,
+}
+
 #[cached(time = 10800, sync_writes = true)]
 async fn get_target(host: String) -> Option<Url> {
-    let mut targets = HashMap::<String, Url>::new();
-    targets.insert(
-        "localhost:3000".to_string(),
-        Url::parse("http://yibzxq3jdqyfjzwgatd3fqihswtrdunjdnlbmb6v6yii5g2ghntbfkad.onion")
-            .unwrap(),
-    );
-    targets.remove(&host)
+    let url = dotenv::var("SUPABASE_SERVER").expect("No Supabase server provided");
+    let admin_key = dotenv::var("SUPABASE_ADMIN_KEY").expect("No Supabase  admin key provided");
+    let client = Postgrest::new(url).insert_header("apikey", admin_key);
+    let resp = client
+        .from("reverse_proxies")
+        .eq("host", host)
+        .select("target_url")
+        .execute()
+        .await;
+    if resp.is_err() {
+        return None;
+    } else {
+        let data = resp.unwrap().json::<Vec<SupabaseTargetInfo>>().await;
+        if data.is_err() {
+            return None;
+        } else {
+            let data = data.unwrap();
+            if data.len() == 0 {
+                return None;
+            } else {
+                return Some(Url::parse(&data[0].target).unwrap());
+            }
+        }
+    }
 }
+
 /// Handle a HTTP or WebSocket request.
 async fn handle_request(mut request: Request<Body>) -> Result<Response<Body>, Error> {
     let host = request.headers().get("Host");
@@ -165,6 +192,7 @@ async fn serve_websocket(
 
 #[tokio::main]
 async fn main() -> Result<(), Error> {
+    dotenv::dotenv().ok();
     let addr: std::net::SocketAddr = "127.0.0.1:3000".parse()?;
     println!("Listening on http://{}", addr);
     hyper::Server::bind(&addr)
