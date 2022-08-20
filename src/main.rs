@@ -35,7 +35,7 @@ lazy_static! {
 #[derive(Deserialize, Debug, Clone)]
 struct SupabaseTargetInfo {
     //host: String,
-    target: String,
+    target_url: String,
 }
 
 #[derive(Error, Debug, PartialEq, Clone)]
@@ -82,7 +82,7 @@ async fn get_target_sub(host: String) -> Result<String, LoadingTargetError> {
             if data.is_empty() {
                 Err(LoadingTargetError::SupabaseError("Not found".to_string()))
             } else {
-                Ok(data[0].target.clone())
+                Ok(data[0].target_url.clone())
             }
         }
     }
