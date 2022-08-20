@@ -16,7 +16,7 @@ fn main() {
         let metadata = fs::metadata(&input).expect("unable to read metadata");
         let mut file = File::open(input).unwrap();
         let mut buffer = vec![0; metadata.len() as usize];
-        file.read(&mut buffer).expect("buffer overflow");
+        file.read_exact(&mut buffer).expect("Read error");
         let minified = minify(&buffer, &cfg);
         let mut file = File::create(output).unwrap();
         file.write_all(&minified).unwrap();
