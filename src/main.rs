@@ -1,7 +1,6 @@
-use cached::proc_macro::cached;
-use dotenv;
+use cached::proc_macro::io_cached;
+use cached::AsyncRedisCache;
 use fast_socks5::client::Socks5Stream;
-use fast_socks5::Result;
 use futures_util::StreamExt;
 use hyper::{http::HeaderValue, Body, Request, Response, StatusCode, Uri};
 use hyper_tungstenite::HyperWebsocket;
@@ -9,6 +8,7 @@ use lazy_static::lazy_static;
 use postgrest::Postgrest;
 use serde::Deserialize;
 use std::convert::Infallible;
+use thiserror::Error;
 use tokio::{join, try_join};
 use url::Url;
 
@@ -21,14 +21,32 @@ lazy_static! {
         .expect("Failed to generated request client!");
 }
 
-#[derive(Deserialize)]
+#[derive(Deserialize, Debug, Clone)]
 struct SupabaseTargetInfo {
     //host: String,
     target: String,
 }
 
-#[cached(time = 10800, sync_writes = true)]
-async fn get_target(host: String) -> Option<Url> {
+#[derive(Error, Debug, PartialEq, Clone)]
+enum LoadingTargetError {
+    #[error("error with redis cache `{0}`")]
+    RedisError(String),
+    #[error("error with supabase `{0}`")]
+    SupabaseError(String),
+}
+
+#[io_cached(
+    map_error = r##"|e| LoadingTargetError::RedisError(format!("{:?}", e))"##,
+    type = "AsyncRedisCache<String, String>",
+    create = r##" {
+        AsyncRedisCache::new("dtv_proxy_cache", 1)
+            .set_refresh(true)
+            .build()
+            .await
+            .expect("error building redis cache")
+    } "##
+)]
+async fn get_target_sub(host: String) -> Result<String, LoadingTargetError> {
     let url = dotenv::var("SUPABASE_SERVER").expect("No Supabase server provided");
     let admin_key = dotenv::var("SUPABASE_ADMIN_KEY").expect("No Supabase  admin key provided");
     let client = Postgrest::new(url).insert_header("apikey", admin_key);
@@ -39,19 +57,30 @@ async fn get_target(host: String) -> Option<Url> {
         .execute()
         .await;
     if resp.is_err() {
-        return None;
+        Err(LoadingTargetError::SupabaseError(resp.unwrap_err().to_string()))
     } else {
         let data = resp.unwrap().json::<Vec<SupabaseTargetInfo>>().await;
         if data.is_err() {
-            return None;
+            Err(LoadingTargetError::SupabaseError(data.unwrap_err().to_string()))
         } else {
             let data = data.unwrap();
-            if data.len() == 0 {
-                return None;
+            if data.is_empty() {
+                Err(LoadingTargetError::SupabaseError("Not found".to_string()))
             } else {
-                return Some(Url::parse(&data[0].target).unwrap());
+                Ok(data[0].target.clone())
             }
         }
+    }
+}
+
+async fn get_target(host: String) -> Result<Url, LoadingTargetError> {
+    let target = get_target_sub(host).await;
+    if target.is_err() {
+        Err(target.unwrap_err())
+    } else {
+        let target = target.unwrap();
+        let url = Url::parse(&target).unwrap();
+        Ok(url)
     }
 }
 
@@ -65,7 +94,7 @@ async fn handle_request(mut request: Request<Body>) -> Result<Response<Body>, Er
     }
     let host = host.unwrap().to_str().unwrap();
     let target = get_target(host.to_string()).await;
-    if target.is_none() {
+    if target.is_err() {
         let mut res = Response::new(Body::from(include_str!("static/minified/404.html")));
         *res.status_mut() = StatusCode::NOT_FOUND;
         return Ok(res);
