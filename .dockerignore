@@ -1,0 +1,5 @@
+target
+src/static/minified
+.env
+.gitignore
+create-manifest.sh
