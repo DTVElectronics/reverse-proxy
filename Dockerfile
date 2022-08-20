@@ -1,4 +1,4 @@
-FROM rust:1.62.0-slim-bullseye as build-env
+FROM rust:1.62.0-bullseye as build-env
 WORKDIR /app
 COPY . /app
 RUN cargo build --release
