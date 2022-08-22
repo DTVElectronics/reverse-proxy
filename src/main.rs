@@ -241,7 +241,7 @@ fn error(err: String) -> io::Error {
 #[tokio::main]
 async fn main() -> Result<(), Error> {
     dotenv::dotenv().ok();
-    let addr: std::net::SocketAddr = "127.0.0.1:443".parse()?;
+    let addr: std::net::SocketAddr = dotenv::var("LISTEN").expect("Missing LISTEN env var").parse()?;
     println!("Listening on https://{}", addr);
     let tls_cfg = {
         let certs = load_certs(dotenv::var("TLS_CERT_CHAIN_PATH").expect("Missing tls cert chain path").as_str())?;
