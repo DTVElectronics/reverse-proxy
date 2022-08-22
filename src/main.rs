@@ -27,7 +27,7 @@ type Error = Box<dyn std::error::Error + Send + Sync + 'static>;
 
 lazy_static! {
     static ref REQWEST_CLIENT: reqwest::Client = reqwest::Client::builder()
-        .proxy(reqwest::Proxy::all("socks5h://127.0.0.1:9050").expect("tor proxy should be there"))
+        .proxy(reqwest::Proxy::all(format!("socks5h://{}", dotenv::var("TOR_PROXY").expect("Missing TOR_PROXY env var"))).expect("tor proxy should be there"))
         .build()
         .expect("Failed to generated request client!");
 }
@@ -213,7 +213,7 @@ async fn serve_websocket(
     target.set_query(request_url.query());
 
     let socks_client = Socks5Stream::connect(
-        "127.0.0.1:9050",
+        dotenv::var("TOR_PROXY").expect("Missing TOR_PROXY env var"),
         target.domain().unwrap().to_string(),
         target_port,
         fast_socks5::client::Config::default(),
