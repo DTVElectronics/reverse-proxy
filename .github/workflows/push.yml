@@ -35,7 +35,6 @@ jobs:
       - name: Run Docker buildx (arm64, cross-compiling)
         run: |
             docker buildx build \
-            --platform linux/arm64 \
             --tag ghcr.io/${GITHUB_REPOSITORY,,}:main-arm64 \
             --file Dockerfile.aarch64 \
             --output "type=registry" ./
