@@ -1,6 +1,9 @@
-
-use minify_html::{Cfg, minify};
-use std::{fs::{File, self}, io::Read, io::Write};
+use minify_html::{minify, Cfg};
+use std::{
+    fs::{self, File},
+    io::Read,
+    io::Write,
+};
 
 fn main() {
     fs::create_dir_all("src/static/minified").unwrap();

@@ -1,5 +1,4 @@
 use cached::proc_macro::io_cached;
-use cached::AsyncRedisCache;
 use core::task::{Context, Poll};
 use fast_socks5::client::Socks5Stream;
 use futures_util::ready;
@@ -11,6 +10,7 @@ use hyper::{http::HeaderValue, Body, Request, Response, Server, StatusCode, Uri}
 use hyper_tungstenite::HyperWebsocket;
 use lazy_static::lazy_static;
 use postgrest::Postgrest;
+use reverse_proxy::cache_utils::AsyncRedisCache;
 use serde::Deserialize;
 use std::future::Future;
 use std::pin::Pin;
@@ -27,7 +27,13 @@ type Error = Box<dyn std::error::Error + Send + Sync + 'static>;
 
 lazy_static! {
     static ref REQWEST_CLIENT: reqwest::Client = reqwest::Client::builder()
-        .proxy(reqwest::Proxy::all(format!("socks5h://{}", dotenv::var("TOR_PROXY").expect("Missing TOR_PROXY env var"))).expect("tor proxy should be there"))
+        .proxy(
+            reqwest::Proxy::all(format!(
+                "socks5h://{}",
+                dotenv::var("TOR_PROXY").expect("Missing TOR_PROXY env var")
+            ))
+            .expect("tor proxy should be there")
+        )
         .build()
         .expect("Failed to generated request client!");
 }
@@ -240,12 +246,23 @@ fn error(err: String) -> io::Error {
 
 #[tokio::main]
 async fn main() -> Result<(), Error> {
+    env_logger::init();
     dotenv::dotenv().ok();
-    let addr: std::net::SocketAddr = dotenv::var("LISTEN").expect("Missing LISTEN env var").parse()?;
+    let addr: std::net::SocketAddr = dotenv::var("LISTEN")
+        .expect("Missing LISTEN env var")
+        .parse()?;
     println!("Listening on https://{}", addr);
     let tls_cfg = {
-        let certs = load_certs(dotenv::var("TLS_CERT_CHAIN_PATH").expect("Missing tls cert chain path").as_str())?;
-        let key = load_private_key(dotenv::var("TLS_KEY_PATH").expect("Missing tls key path").as_str())?;
+        let certs = load_certs(
+            dotenv::var("TLS_CERT_CHAIN_PATH")
+                .expect("Missing tls cert chain path")
+                .as_str(),
+        )?;
+        let key = load_private_key(
+            dotenv::var("TLS_KEY_PATH")
+                .expect("Missing tls key path")
+                .as_str(),
+        )?;
         // Do not use client certificate authentication.
         let mut cfg = rustls::ServerConfig::builder()
             .with_safe_defaults()
@@ -386,16 +403,14 @@ fn load_certs(filename: &str) -> io::Result<Vec<rustls::Certificate>> {
 // Load private key from file.
 fn load_private_key(filename: &str) -> io::Result<rustls::PrivateKey> {
     let rsa_keys = {
-        let keyfile = fs::File::open(filename)
-            .expect("cannot open private key file");
+        let keyfile = fs::File::open(filename).expect("cannot open private key file");
         let mut reader = io::BufReader::new(keyfile);
         rustls_pemfile::rsa_private_keys(&mut reader)
             .expect("file contains invalid rsa private key")
     };
 
     let pkcs8_keys = {
-        let keyfile = fs::File::open(filename)
-            .expect("cannot open private key file");
+        let keyfile = fs::File::open(filename).expect("cannot open private key file");
         let mut reader = io::BufReader::new(keyfile);
         rustls_pemfile::pkcs8_private_keys(&mut reader)
             .expect("file contains invalid pkcs8 private key (encrypted keys not supported)")

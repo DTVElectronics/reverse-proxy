@@ -4,10 +4,6 @@ on:
   push:
     branches: ['main']
 
-env:
-  REGISTRY: ghcr.io
-  IMAGE_NAME: ${{ github.repository }}
-
 jobs:
   build-and-push-image:
     runs-on: ubuntu-latest
@@ -22,27 +18,34 @@ jobs:
       - name: Log in to the Container registry
         uses: docker/login-action@v2
         with:
-          registry: ${{ env.REGISTRY }}
+          registry: ghcr.io
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
-
-      - name: Set up QEMU
-        uses: docker/setup-qemu-action@v2
 
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v2
 
-      - name: Extract metadata (tags, labels) for Docker
-        id: meta
-        uses: docker/metadata-action@v2
-        with:
-          images: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}
+      - name: Run Docker buildx (amd64, native)
+        run: |
+            docker buildx build \
+            --platform linux/amd64 \
+            --tag ghcr.io/${GITHUB_REPOSITORY,,}:main-amd64 \
+            --output "type=registry" ./
 
-      - name: Build and push Docker image
-        uses: docker/build-push-action@v2
-        with:
-          context: .
-          push: true
-          platforms: linux/amd64,linux/arm64
-          tags: ${{ steps.meta.outputs.tags }}
-          labels: ${{ steps.meta.outputs.labels }}
+      - name: Run Docker buildx (arm64, cross-compiling)
+        run: |
+            docker buildx build \
+            --platform linux/arm64 \
+            --tag ghcr.io/${GITHUB_REPOSITORY,,}:main-arm64 \
+            --file Dockerfile.aarch64 \
+            --output "type=registry" ./
+
+      - name: Create final manifest
+        run: |
+            docker manifest create ghcr.io/${GITHUB_REPOSITORY,,}:main ghcr.io/${GITHUB_REPOSITORY,,}:main-amd64 ghcr.io/${GITHUB_REPOSITORY,,}:main-arm64
+            docker manifest annotate ghcr.io/${GITHUB_REPOSITORY,,}:main ghcr.io/${GITHUB_REPOSITORY,,}:main-amd64 --arch amd64 --os linux
+            docker manifest annotate ghcr.io/${GITHUB_REPOSITORY,,}:main ghcr.io/${GITHUB_REPOSITORY,,}:main-arm64 --arch arm64 --os linux
+
+      - name: Push final manifest
+        run: |
+          docker manifest push --purge ghcr.io/${GITHUB_REPOSITORY,,}:main
