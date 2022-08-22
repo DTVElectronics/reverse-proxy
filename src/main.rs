@@ -242,7 +242,7 @@ fn error(err: String) -> io::Error {
 async fn main() -> Result<(), Error> {
     dotenv::dotenv().ok();
     let addr: std::net::SocketAddr = "127.0.0.1:443".parse()?;
-    println!("Listening on http://{}", addr);
+    println!("Listening on https://{}", addr);
     let tls_cfg = {
         let certs = load_certs(dotenv::var("TLS_CERT_CHAIN_PATH").expect("Missing tls cert chain path").as_str())?;
         let key = load_private_key(dotenv::var("TLS_KEY_PATH").expect("Missing tls key path").as_str())?;
@@ -385,17 +385,27 @@ fn load_certs(filename: &str) -> io::Result<Vec<rustls::Certificate>> {
 
 // Load private key from file.
 fn load_private_key(filename: &str) -> io::Result<rustls::PrivateKey> {
-    // Open keyfile.
-    let keyfile = fs::File::open(filename)
-        .map_err(|e| error(format!("failed to open {}: {}", filename, e)))?;
-    let mut reader = io::BufReader::new(keyfile);
+    let rsa_keys = {
+        let keyfile = fs::File::open(filename)
+            .expect("cannot open private key file");
+        let mut reader = io::BufReader::new(keyfile);
+        rustls_pemfile::rsa_private_keys(&mut reader)
+            .expect("file contains invalid rsa private key")
+    };
 
-    // Load and return a single private key.
-    let keys = rustls_pemfile::rsa_private_keys(&mut reader)
-        .map_err(|_| error("failed to load private key".into()))?;
-    if keys.len() != 1 {
-        return Err(error("expected a single private key".into()));
+    let pkcs8_keys = {
+        let keyfile = fs::File::open(filename)
+            .expect("cannot open private key file");
+        let mut reader = io::BufReader::new(keyfile);
+        rustls_pemfile::pkcs8_private_keys(&mut reader)
+            .expect("file contains invalid pkcs8 private key (encrypted keys not supported)")
+    };
+
+    // prefer to load pkcs8 keys
+    if !pkcs8_keys.is_empty() {
+        Ok(rustls::PrivateKey(pkcs8_keys[0].clone()))
+    } else {
+        assert!(!rsa_keys.is_empty());
+        Ok(rustls::PrivateKey(rsa_keys[0].clone()))
     }
-
-    Ok(rustls::PrivateKey(keys[0].clone()))
 }
