@@ -246,24 +246,25 @@ fn error(err: String) -> io::Error {
 
 #[tokio::main]
 async fn main() -> Result<(), Error> {
-    env_logger::init();
     dotenv::dotenv().ok();
+    tracing_subscriber::fmt::init();
     let addr: std::net::SocketAddr = dotenv::var("LISTEN")
         .expect("Missing LISTEN env var")
         .parse()?;
-    println!("Listening on https://{}", addr);
     let tls_cfg = {
+        log::debug!("Loading certificates");
         let certs = load_certs(
             dotenv::var("TLS_CERT_CHAIN_PATH")
                 .expect("Missing tls cert chain path")
                 .as_str(),
         )?;
+        log::debug!("Loading keys");
         let key = load_private_key(
             dotenv::var("TLS_KEY_PATH")
                 .expect("Missing tls key path")
                 .as_str(),
         )?;
-        // Do not use client certificate authentication.
+        log::debug!("Initializing rustls");
         let mut cfg = rustls::ServerConfig::builder()
             .with_safe_defaults()
             .with_no_client_auth()
@@ -273,8 +274,9 @@ async fn main() -> Result<(), Error> {
         cfg.alpn_protocols = vec![b"h2".to_vec(), b"http/1.1".to_vec()];
         sync::Arc::new(cfg)
     };
-
+    log::debug!("Binding to address");
     let incoming = AddrIncoming::bind(&addr)?;
+    println!("Listening on https://{}", addr);
     let service = make_service_fn(|_| async { Ok::<_, io::Error>(service_fn(handle_request)) });
     Server::builder(TlsAcceptor::new(tls_cfg, incoming))
         .serve(service)
