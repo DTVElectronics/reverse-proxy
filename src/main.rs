@@ -146,6 +146,10 @@ async fn handle_request(mut request: Request<Body>) -> Result<Response<Body>, Er
             HeaderValue::from_str(real_host).expect("Failed to turn host into a header"),
         );
         headers.append(
+            "X-Real-IP",
+            HeaderValue::from_str(real_host).expect("Failed to turn host into a header"),
+        );
+        headers.append(
             "X-Forwarded-Proto",
             HeaderValue::from_str(request_url.scheme_str().unwrap_or("https"))
                 .expect("Invalid URL"),
@@ -154,6 +158,7 @@ async fn handle_request(mut request: Request<Body>) -> Result<Response<Body>, Er
         target.set_query(request_url.query());
         let res = REQWEST_CLIENT
             .request(request.method().clone(), target.clone())
+            .headers(headers)
             .body(reqwest::Body::from(request.into_body()))
             .send()
             .await;
