@@ -1,1 +1,2 @@
-pub mod cache_utils;
+mod cache_utils;
+pub use cache_utils::AsyncRedisCache;

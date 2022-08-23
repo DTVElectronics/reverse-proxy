@@ -6,7 +6,7 @@ use hyper::{http::HeaderValue, Body, Request, Response, StatusCode, Uri};
 use hyper_tungstenite::HyperWebsocket;
 use lazy_static::lazy_static;
 use postgrest::Postgrest;
-use reverse_proxy::cache_utils::AsyncRedisCache;
+use reverse_proxy::AsyncRedisCache;
 use serde::Deserialize;
 use simple_hyper_server_tls::{hyper_from_pem_files, Protocols};
 use std::io;
@@ -116,7 +116,7 @@ async fn handle_request(mut request: Request<Body>) -> Result<Response<Body>, Er
     log::debug!("Got request to {}", real_host);
     let target = get_target(real_host.to_string()).await;
     if target.is_err() {
-        log::error!("{:#?}",target.err().unwrap());
+        log::error!("{:#?}", target.err().unwrap());
         let mut res = Response::new(Body::from(include_str!("static/minified/404.html")));
         *res.status_mut() = StatusCode::NOT_FOUND;
         return Ok(res);
