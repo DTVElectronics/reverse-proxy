@@ -30,12 +30,16 @@ jobs:
             docker buildx build \
             --platform linux/amd64 \
             --tag ghcr.io/${GITHUB_REPOSITORY,,}:main-amd64 \
+            --export-cache type=gha \
+            --import-cache type=gha \
             --output "type=registry" ./
 
       - name: Run Docker buildx (arm64, cross-compiling)
         run: |
             docker buildx build \
             --tag ghcr.io/${GITHUB_REPOSITORY,,}:main-arm64 \
+            --export-cache type=gha \
+            --import-cache type=gha \
             --file Dockerfile.aarch64 \
             --output "type=registry" ./
 
