@@ -26,6 +26,7 @@ lazy_static! {
             ))
             .expect("tor proxy should be there")
         )
+        .redirect(reqwest::redirect::Policy::none())
         .build()
         .expect("Failed to generated request client!");
 }
