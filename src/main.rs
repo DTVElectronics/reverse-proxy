@@ -142,6 +142,9 @@ async fn handle_request(mut request: Request<Body>) -> Result<Response<Body>, Er
         log::debug!("Sending proxy request");
         let request_url = request.uri();
         let mut headers = request.headers().clone();
+        headers.remove("X-Forwarded-For");
+        headers.remove("X-Real-IP");
+        headers.remove("X-Forwarded-Proto");
         headers.append(
             "X-Forwarded-For",
             HeaderValue::from_str(real_host).expect("Failed to turn host into a header"),
