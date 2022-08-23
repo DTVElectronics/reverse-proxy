@@ -59,8 +59,8 @@ async fn get_target_sub(host: String) -> Result<String, LoadingTargetError> {
     let url = dotenv::var("SUPABASE_SERVER").expect("No Supabase server provided");
     let admin_key = dotenv::var("SUPABASE_ADMIN_KEY").expect("No Supabase  admin key provided");
     let client = Postgrest::new(format!("{}/rest/v1", url))
-        .insert_header("apikey", admin_key)
-        .insert_header("authorization", format!("Bearer {}", url));
+        .insert_header("apikey", &admin_key)
+        .insert_header("authorization", format!("Bearer {}", admin_key));
     let resp = client
         .from("reverse_proxies")
         .eq("host", host)
