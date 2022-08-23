@@ -155,6 +155,7 @@ async fn handle_request(mut request: Request<Body>) -> Result<Response<Body>, Er
             HeaderValue::from_str(request_url.scheme_str().unwrap_or("https"))
                 .expect("Invalid URL"),
         );
+        log::debug!("{:#?}", headers);
         target.set_path(request_url.path());
         target.set_query(request_url.query());
         let res = REQWEST_CLIENT
