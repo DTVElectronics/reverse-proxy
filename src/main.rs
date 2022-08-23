@@ -101,19 +101,27 @@ async fn get_target(host: String) -> Result<Url, LoadingTargetError> {
 async fn handle_request(mut request: Request<Body>) -> Result<Response<Body>, Error> {
     log::debug!("Received request!");
     let host = request.uri().host();
+    let real_host: &str;
     if host.is_none() {
-        let mut res = Response::new(Body::from("Missing host header"));
-        *res.status_mut() = StatusCode::BAD_REQUEST;
-        return Ok(res);
+        let host = request.headers().get("host");
+        if host.is_none() {
+            let mut res = Response::new(Body::from("Missing host header"));
+            *res.status_mut() = StatusCode::BAD_REQUEST;
+            return Ok(res);
+        }
+        real_host = host.unwrap().to_str().expect("Failed to parse host");
+    } else {
+        real_host = host.unwrap();
     }
-    let host = host.unwrap();
-    let target = get_target(host.to_string()).await;
+    log::debug!("Got request to {}", real_host);
+    let target = get_target(real_host.to_string()).await;
     if target.is_err() {
+        log::error!("{:#?}",target.err().unwrap());
         let mut res = Response::new(Body::from(include_str!("static/minified/404.html")));
         *res.status_mut() = StatusCode::NOT_FOUND;
         return Ok(res);
     }
-    let mut target = target.unwrap().clone();
+    let mut target = target.unwrap();
     // Check if the request is a websocket upgrade request.
     if hyper_tungstenite::is_upgrade_request(&request) {
         let (response, websocket) = hyper_tungstenite::upgrade(&mut request, None)?;
@@ -133,7 +141,7 @@ async fn handle_request(mut request: Request<Body>) -> Result<Response<Body>, Er
         let mut headers = request.headers().clone();
         headers.append(
             "X-Forwarded-For",
-            HeaderValue::from_str(host).expect("Failed to turn host into a header"),
+            HeaderValue::from_str(real_host).expect("Failed to turn host into a header"),
         );
         headers.append(
             "X-Forwarded-Proto",
