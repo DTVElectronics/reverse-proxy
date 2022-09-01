@@ -6,10 +6,14 @@ use hyper::{http::HeaderValue, Body, Request, Response, StatusCode, Uri};
 use hyper_tungstenite::HyperWebsocket;
 use lazy_static::lazy_static;
 use postgrest::Postgrest;
+use prometheus::{
+    HistogramOpts, HistogramVec, IntCounter, IntCounterVec, IntGauge, Opts, Registry,
+};
 use reverse_proxy::AsyncRedisCache;
 use serde::Deserialize;
 use simple_hyper_server_tls::{hyper_from_pem_files, Protocols};
 use std::io;
+use std::time::Instant;
 use std::vec::Vec;
 use thiserror::Error;
 use tokio::{join, try_join};
@@ -29,6 +33,39 @@ lazy_static! {
         .redirect(reqwest::redirect::Policy::none())
         .build()
         .expect("Failed to generated request client!");
+    pub static ref REGISTRY: Registry = Registry::new();
+    pub static ref INCOMING_REQUESTS: IntCounter =
+        IntCounter::new("incoming_requests", "Incoming Requests").expect("metric can be created");
+    pub static ref CONNECTED_CLIENTS: IntGauge =
+        IntGauge::new("connected_clients", "Connected Clients").expect("metric can be created");
+    pub static ref RESPONSE_CODE_COLLECTOR: IntCounterVec = IntCounterVec::new(
+        Opts::new("response_code", "Response Codes"),
+        &["env", "statuscode", "type"]
+    )
+    .expect("metric can be created");
+    pub static ref RESPONSE_TIME_COLLECTOR: HistogramVec = HistogramVec::new(
+        HistogramOpts::new("response_time", "Response Times"),
+        &["env"]
+    )
+    .expect("metric can be created");
+}
+
+fn register_custom_metrics() {
+    REGISTRY
+        .register(Box::new(INCOMING_REQUESTS.clone()))
+        .expect("collector can be registered");
+
+    REGISTRY
+        .register(Box::new(CONNECTED_CLIENTS.clone()))
+        .expect("collector can be registered");
+
+    REGISTRY
+        .register(Box::new(RESPONSE_CODE_COLLECTOR.clone()))
+        .expect("collector can be registered");
+
+    REGISTRY
+        .register(Box::new(RESPONSE_TIME_COLLECTOR.clone()))
+        .expect("collector can be registered");
 }
 
 #[derive(Deserialize, Debug, Clone)]
@@ -102,6 +139,7 @@ async fn get_target(host: String) -> Result<Url, LoadingTargetError> {
 
 /// Handle a HTTP or WebSocket request.
 async fn handle_request(mut request: Request<Body>) -> Result<Response<Body>, Error> {
+    let now = Instant::now();
     log::debug!("Received request!");
     let host = request.uri().host();
     let real_host: &str;
@@ -110,6 +148,8 @@ async fn handle_request(mut request: Request<Body>) -> Result<Response<Body>, Er
         if host.is_none() {
             let mut res = Response::new(Body::from("Missing host header"));
             *res.status_mut() = StatusCode::BAD_REQUEST;
+            track_status_code(res.status().as_u16().into(), "production");
+            track_request_time(now.elapsed().as_secs_f64(), "production");
             return Ok(res);
         }
         real_host = host.unwrap().to_str().expect("Failed to parse host");
@@ -122,6 +162,8 @@ async fn handle_request(mut request: Request<Body>) -> Result<Response<Body>, Er
         log::error!("{:#?}", target.err().unwrap());
         let mut res = Response::new(Body::from(include_str!("static/minified/404.html")));
         *res.status_mut() = StatusCode::NOT_FOUND;
+        track_status_code(res.status().as_u16().into(), "production");
+        track_request_time(now.elapsed().as_secs_f64(), "production");
         return Ok(res);
     }
     let mut target = target.unwrap();
@@ -184,6 +226,8 @@ async fn handle_request(mut request: Request<Body>) -> Result<Response<Body>, Er
                 );
                 let res_bytes = res.bytes().await?;
                 *final_response.body_mut() = Body::from(res_bytes);
+                track_status_code(final_response.status().as_u16().into(), "production");
+                track_request_time(now.elapsed().as_secs_f64(), "production");
                 Ok(final_response)
             }
             Err(err) => {
@@ -191,6 +235,8 @@ async fn handle_request(mut request: Request<Body>) -> Result<Response<Body>, Er
                 eprintln!("{:#?}", err);
                 let mut res = Response::new(Body::from(include_str!("static/minified/502.html")));
                 *res.status_mut() = StatusCode::BAD_GATEWAY;
+                track_status_code(res.status().as_u16().into(), "production");
+                track_request_time(now.elapsed().as_secs_f64(), "production");
                 Ok(res)
             }
         }
@@ -247,10 +293,12 @@ async fn serve_websocket(
         join!(tokio_tungstenite::client_async(target, socket), websocket);
     let (write_target, read_target) = origin_server?.0.split();
     let (write_client, read_client) = websocket?.split();
+    CONNECTED_CLIENTS.inc();
     let forwarding_result = try_join!(
         read_client.forward(write_target),
         read_target.forward(write_client)
     );
+    CONNECTED_CLIENTS.dec();
     if let Err(forwarding_error) = forwarding_result {
         eprintln!("{:#?}", forwarding_error);
     }
@@ -261,17 +309,88 @@ async fn serve_websocket(
 async fn main() -> Result<(), Error> {
     dotenv::dotenv().ok();
     tracing_subscriber::fmt::init();
-    let addr: std::net::SocketAddr = dotenv::var("LISTEN")
+    register_custom_metrics();
+    let proxy_addr: std::net::SocketAddr = dotenv::var("LISTEN")
         .expect("Missing LISTEN env var")
+        .parse()?;
+    let metrics_addr: std::net::SocketAddr = dotenv::var("METRICS_LISTEN")
+        .expect("Missing METRICS_LISTEN env var")
         .parse()?;
     let chain_path = dotenv::var("TLS_CERT_CHAIN_PATH").expect("Missing tls cert chain path");
     let privkey_path = dotenv::var("TLS_KEY_PATH").expect("Missing tls key path");
+
     log::debug!("Binding to address");
-    println!("Listening on https://{}", addr);
-    let service = make_service_fn(|_| async { Ok::<_, io::Error>(service_fn(handle_request)) });
-    hyper_from_pem_files(chain_path, privkey_path, Protocols::ALL, &addr)
+    println!("Proxy listening on https://{}", proxy_addr);
+    println!("Metrics listening on http://{}", metrics_addr);
+    let proxy_service =
+        make_service_fn(|_| async { Ok::<_, io::Error>(service_fn(handle_request)) });
+    let proxy_server = hyper_from_pem_files(chain_path, privkey_path, Protocols::ALL, &proxy_addr)
         .unwrap()
-        .serve(service)
-        .await?;
+        .serve(proxy_service);
+    let metrics_service =
+        make_service_fn(|_| async { Ok::<_, io::Error>(service_fn(metrics_handler)) });
+    let metrics_server = hyper::Server::bind(&proxy_addr).serve(metrics_service);
+    try_join!(proxy_server, metrics_server).expect("Listening failed");
     Ok(())
+}
+
+fn track_request_time(response_time: f64, env: &str) {
+    RESPONSE_TIME_COLLECTOR
+        .with_label_values(&[env])
+        .observe(response_time);
+}
+
+fn track_status_code(status_code: usize, env: &str) {
+    match status_code {
+        500..=599 => RESPONSE_CODE_COLLECTOR
+            .with_label_values(&[env, &status_code.to_string(), "500"])
+            .inc(),
+        400..=499 => RESPONSE_CODE_COLLECTOR
+            .with_label_values(&[env, &status_code.to_string(), "400"])
+            .inc(),
+        300..=399 => RESPONSE_CODE_COLLECTOR
+            .with_label_values(&[env, &status_code.to_string(), "300"])
+            .inc(),
+        200..=299 => RESPONSE_CODE_COLLECTOR
+            .with_label_values(&[env, &status_code.to_string(), "200"])
+            .inc(),
+        100..=199 => RESPONSE_CODE_COLLECTOR
+            .with_label_values(&[env, &status_code.to_string(), "100"])
+            .inc(),
+        _ => (),
+    };
+}
+
+async fn metrics_handler(_request: Request<Body>) -> Result<Response<Body>, Error> {
+    use prometheus::Encoder;
+    let encoder = prometheus::TextEncoder::new();
+
+    let mut buffer = Vec::new();
+    if let Err(e) = encoder.encode(&REGISTRY.gather(), &mut buffer) {
+        eprintln!("could not encode custom metrics: {}", e);
+    };
+    let mut res = match String::from_utf8(buffer.clone()) {
+        Ok(v) => v,
+        Err(e) => {
+            eprintln!("custom metrics could not be from_utf8'd: {}", e);
+            String::default()
+        }
+    };
+    buffer.clear();
+
+    let mut buffer = Vec::new();
+    if let Err(e) = encoder.encode(&prometheus::gather(), &mut buffer) {
+        eprintln!("could not encode prometheus metrics: {}", e);
+    };
+    let res_custom = match String::from_utf8(buffer.clone()) {
+        Ok(v) => v,
+        Err(e) => {
+            eprintln!("prometheus metrics could not be from_utf8'd: {}", e);
+            String::default()
+        }
+    };
+    buffer.clear();
+
+    res.push_str(&res_custom);
+    Ok(Response::new(Body::from(res)))
 }
