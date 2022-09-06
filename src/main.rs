@@ -16,7 +16,7 @@ use std::io;
 use std::time::Instant;
 use std::vec::Vec;
 use thiserror::Error;
-use tokio::{join, try_join};
+use tokio::{try_join};
 use url::Url;
 
 type Error = Box<dyn std::error::Error + Send + Sync + 'static>;
@@ -290,9 +290,9 @@ async fn serve_websocket(
     .await?;
     let socket = socks_client.get_socket();
     let (origin_server, websocket) =
-        join!(tokio_tungstenite::client_async(target, socket), websocket);
-    let (write_target, read_target) = origin_server?.0.split();
-    let (write_client, read_client) = websocket?.split();
+        try_join!(tokio_tungstenite::client_async(target, socket), websocket)?;
+    let (write_target, read_target) = origin_server.0.split();
+    let (write_client, read_client) = websocket.split();
     CONNECTED_CLIENTS.inc();
     let forwarding_result = try_join!(
         read_client.forward(write_target),
