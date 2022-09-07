@@ -305,7 +305,7 @@ async fn serve_websocket(
     Ok(())
 }
 
-#[tokio::main]
+#[tokio::main(flavor = "multi_thread")]
 async fn main() -> Result<(), Error> {
     dotenv::dotenv().ok();
     tracing_subscriber::fmt::init();
