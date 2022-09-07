@@ -341,24 +341,8 @@ fn track_request_time(response_time: f64, env: &str) {
 }
 
 fn track_status_code(status_code: usize, env: &str) {
-    match status_code {
-        500..=599 => RESPONSE_CODE_COLLECTOR
-            .with_label_values(&[env, &status_code.to_string(), "500"])
-            .inc(),
-        400..=499 => RESPONSE_CODE_COLLECTOR
-            .with_label_values(&[env, &status_code.to_string(), "400"])
-            .inc(),
-        300..=399 => RESPONSE_CODE_COLLECTOR
-            .with_label_values(&[env, &status_code.to_string(), "300"])
-            .inc(),
-        200..=299 => RESPONSE_CODE_COLLECTOR
-            .with_label_values(&[env, &status_code.to_string(), "200"])
-            .inc(),
-        100..=199 => RESPONSE_CODE_COLLECTOR
-            .with_label_values(&[env, &status_code.to_string(), "100"])
-            .inc(),
-        _ => (),
-    };
+    RESPONSE_CODE_COLLECTOR
+            .with_label_values(&[env, &status_code.to_string(), &status_code.to_string()]);
 }
 
 async fn metrics_handler(_request: Request<Body>) -> Result<Response<Body>, Error> {
