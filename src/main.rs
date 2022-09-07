@@ -111,9 +111,9 @@ async fn get_target_sub(host: String) -> Result<String, LoadingTargetError> {
         ))
     } else {
         let data = resp.unwrap().json::<Vec<SupabaseTargetInfo>>().await;
-        if data.is_err() {
+        if let Err(supabase_error) = data {
             Err(LoadingTargetError::SupabaseError(
-                data.unwrap_err().to_string(),
+                supabase_error.to_string()
             ))
         } else {
             let data = data.unwrap();
