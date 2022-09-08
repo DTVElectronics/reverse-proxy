@@ -6,7 +6,7 @@ It currently uses a SOCKS proxy, but support for the native Rust Tor (arti) is p
 
 We use Supabase for account management. In addition, we use Redis to cache results from Supabase.
 
-This proxy currently oly supports HTTP and WebSockets, but more protocols will be added in the future.
+This proxy currently only supports HTTP and WebSockets, but more protocols will be added in the future.
 
 SSL management is currently handled by Cloudflare, but we will later implement support for the ACME protocol.
 
