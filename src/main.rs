@@ -5,6 +5,7 @@ use hyper::service::{make_service_fn, service_fn};
 use hyper::{http::HeaderValue, Body, Request, Response, StatusCode, Uri};
 use hyper_tungstenite::HyperWebsocket;
 use lazy_static::lazy_static;
+use log::debug;
 use postgrest::Postgrest;
 use prometheus::{
     HistogramOpts, HistogramVec, IntCounter, IntCounterVec, IntGauge, Opts, Registry,
@@ -219,6 +220,7 @@ async fn handle_request(mut request: Request<Body>) -> Result<Response<Body>, Er
                 log::debug!("Worked!");
                 let mut final_response = Response::new(Body::from(""));
                 *final_response.status_mut() = res.status();
+                track_status_code(res.status().as_u16().into(), "production");
                 *final_response.headers_mut() = res.headers().clone();
                 final_response.headers_mut().append(
                     "Onion-Location",
@@ -226,7 +228,6 @@ async fn handle_request(mut request: Request<Body>) -> Result<Response<Body>, Er
                 );
                 let res_bytes = res.bytes().await?;
                 *final_response.body_mut() = Body::from(res_bytes);
-                track_status_code(final_response.status().as_u16().into(), "production");
                 track_request_time(now.elapsed().as_secs_f64(), "production");
                 Ok(final_response)
             }
@@ -341,8 +342,25 @@ fn track_request_time(response_time: f64, env: &str) {
 }
 
 fn track_status_code(status_code: usize, env: &str) {
-    RESPONSE_CODE_COLLECTOR
-            .with_label_values(&[env, &status_code.to_string(), &status_code.to_string()]);
+    debug!("Response with status {}", status_code);
+    match status_code {
+        500..=599 => RESPONSE_CODE_COLLECTOR
+            .with_label_values(&[env, &status_code.to_string(), "500"])
+            .inc(),
+        400..=499 => RESPONSE_CODE_COLLECTOR
+            .with_label_values(&[env, &status_code.to_string(), "400"])
+            .inc(),
+        300..=399 => RESPONSE_CODE_COLLECTOR
+            .with_label_values(&[env, &status_code.to_string(), "300"])
+            .inc(),
+        200..=299 => RESPONSE_CODE_COLLECTOR
+            .with_label_values(&[env, &status_code.to_string(), "200"])
+            .inc(),
+        100..=199 => RESPONSE_CODE_COLLECTOR
+            .with_label_values(&[env, &status_code.to_string(), "100"])
+            .inc(),
+        _ => (),
+    };
 }
 
 async fn metrics_handler(_request: Request<Body>) -> Result<Response<Body>, Error> {
