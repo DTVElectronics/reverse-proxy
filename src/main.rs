@@ -329,7 +329,7 @@ async fn main() -> Result<(), Error> {
         .serve(proxy_service);
     let metrics_service =
         make_service_fn(|_| async { Ok::<_, io::Error>(service_fn(metrics_handler)) });
-    let metrics_server = hyper::Server::bind(&proxy_addr).serve(metrics_service);
+    let metrics_server = hyper::Server::bind(&metrics_addr).serve(metrics_service);
     try_join!(proxy_server, metrics_server).expect("Listening failed");
     Ok(())
 }
