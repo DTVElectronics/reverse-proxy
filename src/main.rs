@@ -240,10 +240,8 @@ async fn serve_websocket(
     let target_port = target.port().unwrap_or_else(|| match target.origin() {
         url::Origin::Opaque(_) => 0,
         url::Origin::Tuple(proto, _, _) => match proto.as_str() {
-            "ws" => 80,
-            "wss" => 443,
-            "http" => 80,
-            "https" => 443,
+            "ws" | "http" => 80,
+            "wss" | "https" => 443,
             _ => 0,
         },
     });
@@ -252,13 +250,11 @@ async fn serve_websocket(
     }
     target
         .set_scheme(match target.origin() {
-            url::Origin::Opaque(_) => panic!(),
+            url::Origin::Opaque(_) => unreachable!(),
             url::Origin::Tuple(proto, _, _) => match proto.as_str() {
-                "ws" => "ws",
-                "wss" => "wss",
-                "http" => "ws",
-                "https" => "wss",
-                _ => panic!(),
+                "ws" | "http" => "ws",
+                "wss" | "https" => "wss",
+                _ => unreachable!(),
             },
         })
         .expect("Invalid protocol");
@@ -270,7 +266,7 @@ async fn serve_websocket(
 
     let socks_client = Socks5Stream::connect(
         dotenv::var("TOR_PROXY").expect("Missing TOR_PROXY env var"),
-        target.domain().unwrap().to_string(),
+        target.host().expect("Target has no host").to_string(),
         target_port,
         fast_socks5::client::Config::default(),
     )
@@ -312,7 +308,7 @@ async fn main() -> Result<(), Error> {
     let proxy_service =
         make_service_fn(|_| async { Ok::<_, io::Error>(service_fn(handle_request)) });
     let proxy_server = hyper_from_pem_files(chain_path, privkey_path, Protocols::ALL, &proxy_addr)
-        .unwrap()
+        .expect("Failed to create server from given TLS files")
         .serve(proxy_service);
     let metrics_service =
         make_service_fn(|_| async { Ok::<_, io::Error>(service_fn(metrics_handler)) });
@@ -366,7 +362,6 @@ async fn metrics_handler(_request: Request<Body>) -> Result<Response<Body>, Erro
     };
     buffer.clear();
 
-    let mut buffer = Vec::new();
     if let Err(e) = encoder.encode(&prometheus::gather(), &mut buffer) {
         eprintln!("could not encode prometheus metrics: {}", e);
     };
