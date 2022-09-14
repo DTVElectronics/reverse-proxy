@@ -4,7 +4,7 @@ This is a minimal reverse proxy that makes it possible to make apps tat are only
 
 It currently uses a SOCKS proxy, but support for the native Rust Tor (arti) is planned once it supports hidden services.
 
-We use Supabase for account management. In addition, we use Redis to cache results from Supabase.
+We use Supabase for account management.
 
 This proxy currently only supports HTTP and WebSockets, but more protocols will be added in the future.
 
