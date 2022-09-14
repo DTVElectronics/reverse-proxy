@@ -74,7 +74,7 @@ struct SupabaseTargetInfo {
     host_is_target: bool,
 }
 
-#[cached]
+#[cached(time = 3600)]
 async fn get_target_sub(host: String) -> Result<SupabaseTargetInfo, String> {
     let url = dotenv::var("SUPABASE_SERVER").expect("No Supabase server provided");
     let admin_key = dotenv::var("SUPABASE_ADMIN_KEY").expect("No Supabase admin key provided");
@@ -176,16 +176,18 @@ async fn handle_request(mut request: Request<Body>) -> Result<Response<Body>, Er
         headers.remove("X-Forwarded-For");
         headers.remove("X-Real-IP");
         headers.remove("X-Forwarded-Proto");
+        let host_as_header = HeaderValue::from_str(real_host).expect("Failed to turn host into a header");
         if target_info.host_is_target {
             headers.remove("Host");
+            headers.append("Host", host_as_header.clone());
         }
         headers.append(
             "X-Forwarded-For",
-            HeaderValue::from_str(real_host).expect("Failed to turn host into a header"),
+            host_as_header.clone(),
         );
         headers.append(
             "X-Real-IP",
-            HeaderValue::from_str(real_host).expect("Failed to turn host into a header"),
+            host_as_header,
         );
         headers.append(
             "X-Forwarded-Proto",
