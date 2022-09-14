@@ -2,7 +2,7 @@ use cached::proc_macro::cached;
 use fast_socks5::client::Socks5Stream;
 use futures_util::StreamExt;
 use hyper::service::{make_service_fn, service_fn};
-use hyper::{http::HeaderValue, Body, Request, Response, StatusCode, Uri};
+use hyper::{http::HeaderValue, Body, Request, Response, StatusCode, Uri, client::HttpConnector};
 use hyper_tungstenite::HyperWebsocket;
 use lazy_static::lazy_static;
 use log::debug;
@@ -13,25 +13,26 @@ use prometheus::{
 use serde::Deserialize;
 use simple_hyper_server_tls::{hyper_from_pem_files, Protocols};
 use std::io;
+use std::str::FromStr;
 use std::time::Instant;
 use std::vec::Vec;
 use tokio::try_join;
 use url::Url;
+use hyper_socks2::SocksConnector;
 
 type Error = Box<dyn std::error::Error + Send + Sync + 'static>;
 
 lazy_static! {
-    static ref REQWEST_CLIENT: reqwest::Client = reqwest::Client::builder()
-        .proxy(
-            reqwest::Proxy::all(format!(
-                "socks5h://{}",
+    static ref HYPER_CLIENT: hyper::Client<SocksConnector<HttpConnector>> = hyper::Client::builder()
+        .http1_title_case_headers(true)
+        .build(SocksConnector {
+            proxy_addr: Uri::from_str(format!(
+                "http://{}",
                 dotenv::var("TOR_PROXY").expect("Missing TOR_PROXY env var")
-            ))
-            .expect("tor proxy should be there")
-        )
-        .redirect(reqwest::redirect::Policy::none())
-        .build()
-        .expect("Failed to generated request client!");
+            ).as_str()).expect("Failed to parse proxy URL"), // scheme is required by HttpConnector
+            auth: None,
+            connector: HttpConnector::new(),
+        });
     pub static ref REGISTRY: Registry = Registry::new();
     pub static ref INCOMING_REQUESTS: IntCounter =
         IntCounter::new("incoming_requests", "Incoming Requests").expect("metric can be created");
@@ -71,7 +72,7 @@ fn register_custom_metrics() {
 struct SupabaseTargetInfo {
     //host: String,
     target_url: String,
-    host_is_target: bool,
+    btcpay_compat: bool,
 }
 
 #[cached(time = 3600)]
@@ -84,7 +85,7 @@ async fn get_target_sub(host: String) -> Result<SupabaseTargetInfo, String> {
     let resp = client
         .from("reverse_proxies")
         .eq("host", host)
-        .select("target_url, host_is_target")
+        .select("target_url, btcpay_compat")
         .execute()
         .await;
     if resp.is_err() {
@@ -108,7 +109,7 @@ async fn get_target_sub(host: String) -> Result<SupabaseTargetInfo, String> {
 struct TargetInfo {
     //host: String,
     url: Url,
-    host_is_target: bool,
+    btcpay_compat: bool,
 }
 
 async fn get_target(host: String) -> Result<TargetInfo, String> {
@@ -120,7 +121,7 @@ async fn get_target(host: String) -> Result<TargetInfo, String> {
         let url = Url::parse(&target.target_url).unwrap();
         Ok(TargetInfo {
             url,
-            host_is_target: target.host_is_target,
+            btcpay_compat: target.btcpay_compat,
         })
     }
 }
@@ -173,23 +174,20 @@ async fn handle_request(mut request: Request<Body>) -> Result<Response<Body>, Er
         log::debug!("Sending proxy request");
         let request_url = request.uri();
         let mut headers = request.headers().clone();
-        headers.remove("X-Forwarded-For");
-        headers.remove("X-Real-IP");
-        headers.remove("X-Forwarded-Proto");
         let host_as_header = HeaderValue::from_str(real_host).expect("Failed to turn host into a header");
-        if target_info.host_is_target {
-            headers.remove("Host");
-            headers.append("Host", host_as_header.clone());
+        if !target_info.btcpay_compat {
+            /* With these headers, btcpay ignores X-Forwarded-Proto, I have no idea why */
+            headers.insert(
+                "X-Forwarded-For",
+                host_as_header.clone(),
+            );
+            headers.insert(
+                "X-Real-IP",
+                host_as_header.clone(),
+            );
         }
-        headers.append(
-            "X-Forwarded-For",
-            host_as_header.clone(),
-        );
-        headers.append(
-            "X-Real-IP",
-            host_as_header,
-        );
-        headers.append(
+        headers.insert("Host", host_as_header);
+        headers.insert(
             "X-Forwarded-Proto",
             HeaderValue::from_str(request_url.scheme_str().unwrap_or("https"))
                 .expect("Invalid URL"),
@@ -197,12 +195,11 @@ async fn handle_request(mut request: Request<Body>) -> Result<Response<Body>, Er
         log::debug!("{:#?}", headers);
         target.set_path(request_url.path());
         target.set_query(request_url.query());
-        let res = REQWEST_CLIENT
-            .request(request.method().clone(), target.clone())
-            .headers(headers)
-            .body(reqwest::Body::from(request.into_body()))
-            .send()
-            .await;
+        let mut req = hyper::Request::builder().method(request.method().clone()).uri(target.as_str()).version(hyper::Version::HTTP_11);
+        *req.headers_mut().unwrap() = headers.clone();
+        let req = req.body(request.into_body()).expect("Failed to construct request");
+
+        let res = HYPER_CLIENT.request(req).await;
         match res {
             Ok(res) => {
                 log::debug!("Worked!");
@@ -214,8 +211,8 @@ async fn handle_request(mut request: Request<Body>) -> Result<Response<Body>, Er
                     "Onion-Location",
                     HeaderValue::from_str(target.domain().unwrap_or("")).unwrap(),
                 );
-                let res_bytes = res.bytes().await?;
-                *final_response.body_mut() = Body::from(res_bytes);
+                let res_body = res.into_body();
+                *final_response.body_mut() = res_body;
                 track_request_time(now.elapsed().as_secs_f64(), "production");
                 Ok(final_response)
             }
