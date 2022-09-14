@@ -77,14 +77,14 @@ struct SupabaseTargetInfo {
 #[cached]
 async fn get_target_sub(host: String) -> Result<SupabaseTargetInfo, String> {
     let url = dotenv::var("SUPABASE_SERVER").expect("No Supabase server provided");
-    let admin_key = dotenv::var("SUPABASE_ADMIN_KEY").expect("No Supabase  admin key provided");
+    let admin_key = dotenv::var("SUPABASE_ADMIN_KEY").expect("No Supabase admin key provided");
     let client = Postgrest::new(format!("{}/rest/v1", url))
         .insert_header("apikey", &admin_key)
         .insert_header("authorization", format!("Bearer {}", admin_key));
     let resp = client
         .from("reverse_proxies")
         .eq("host", host)
-        .select("target_url")
+        .select("target_url, host_is_target")
         .execute()
         .await;
     if resp.is_err() {
