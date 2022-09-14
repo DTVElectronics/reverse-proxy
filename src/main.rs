@@ -148,7 +148,7 @@ async fn handle_request(mut request: Request<Body>) -> Result<Response<Body>, Er
     let target = get_target(real_host.to_string()).await;
     if target.is_err() {
         log::error!("{:#?}", target.err().unwrap());
-        let mut res = Response::new(Body::from(include_str!("static/minified/404.html")));
+        let mut res = Response::new(Body::from(include_str!("static/minified/429.html")));
         *res.status_mut() = StatusCode::MISDIRECTED_REQUEST;
         track_status_code(res.status().as_u16().into(), "production");
         track_request_time(now.elapsed().as_secs_f64(), "production");

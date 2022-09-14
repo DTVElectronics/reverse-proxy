@@ -5,14 +5,15 @@ use std::{
     io::Write,
 };
 
+static FILES: [&str; 3] = ["429.html", "500.html", "502.html"];
+
 fn main() {
     fs::create_dir_all("src/static/minified").unwrap();
-    let files = vec!["404.html", "500.html", "502.html"];
     let mut cfg = Cfg::new();
     cfg.do_not_minify_doctype = true;
     cfg.keep_html_and_head_opening_tags = true;
     cfg.keep_closing_tags = true;
-    for filename in files {
+    for filename in FILES {
         let input = format!("src/static/{}", filename);
         let output = format!("src/static/minified/{}", filename);
         println!("cargo:rerun-if-changed={}", input);
