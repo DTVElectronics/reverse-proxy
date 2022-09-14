@@ -1,4 +1,4 @@
-use cached::proc_macro::io_cached;
+use cached::proc_macro::cached;
 use fast_socks5::client::Socks5Stream;
 use futures_util::StreamExt;
 use hyper::service::{make_service_fn, service_fn};
@@ -10,14 +10,12 @@ use postgrest::Postgrest;
 use prometheus::{
     HistogramOpts, HistogramVec, IntCounter, IntCounterVec, IntGauge, Opts, Registry,
 };
-use reverse_proxy::AsyncRedisCache;
 use serde::Deserialize;
 use simple_hyper_server_tls::{hyper_from_pem_files, Protocols};
 use std::io;
 use std::time::Instant;
 use std::vec::Vec;
-use thiserror::Error;
-use tokio::{try_join};
+use tokio::try_join;
 use url::Url;
 
 type Error = Box<dyn std::error::Error + Send + Sync + 'static>;
@@ -73,28 +71,11 @@ fn register_custom_metrics() {
 struct SupabaseTargetInfo {
     //host: String,
     target_url: String,
+    host_is_target: bool,
 }
 
-#[derive(Error, Debug, PartialEq, Clone)]
-enum LoadingTargetError {
-    #[error("error with redis cache `{0}`")]
-    RedisError(String),
-    #[error("error with supabase `{0}`")]
-    SupabaseError(String),
-}
-
-#[io_cached(
-    map_error = r##"|e| LoadingTargetError::RedisError(format!("{:?}", e))"##,
-    type = "AsyncRedisCache<String, String>",
-    create = r##" {
-        AsyncRedisCache::new("dtv_proxy_cache", 1)
-            .set_refresh(true)
-            .build()
-            .await
-            .expect("error building redis cache")
-    } "##
-)]
-async fn get_target_sub(host: String) -> Result<String, LoadingTargetError> {
+#[cached]
+async fn get_target_sub(host: String) -> Result<SupabaseTargetInfo, String> {
     let url = dotenv::var("SUPABASE_SERVER").expect("No Supabase server provided");
     let admin_key = dotenv::var("SUPABASE_ADMIN_KEY").expect("No Supabase  admin key provided");
     let client = Postgrest::new(format!("{}/rest/v1", url))
@@ -107,34 +88,40 @@ async fn get_target_sub(host: String) -> Result<String, LoadingTargetError> {
         .execute()
         .await;
     if resp.is_err() {
-        Err(LoadingTargetError::SupabaseError(
-            resp.unwrap_err().to_string(),
-        ))
+        Err(resp.unwrap_err().to_string())
     } else {
         let data = resp.unwrap().json::<Vec<SupabaseTargetInfo>>().await;
         if let Err(supabase_error) = data {
-            Err(LoadingTargetError::SupabaseError(
-                supabase_error.to_string()
-            ))
+            Err(supabase_error.to_string())
         } else {
             let data = data.unwrap();
             if data.is_empty() {
-                Err(LoadingTargetError::SupabaseError("Not found".to_string()))
+                Err("Not found".to_string())
             } else {
-                Ok(data[0].target_url.clone())
+                Ok(data[0].clone())
             }
         }
     }
 }
 
-async fn get_target(host: String) -> Result<Url, LoadingTargetError> {
+#[derive(Debug, Clone)]
+struct TargetInfo {
+    //host: String,
+    url: Url,
+    host_is_target: bool,
+}
+
+async fn get_target(host: String) -> Result<TargetInfo, String> {
     let target = get_target_sub(host).await;
-    if target.is_err() {
-        Err(target.unwrap_err())
+    if let Err(err) = target {
+        Err(err)
     } else {
         let target = target.unwrap();
-        let url = Url::parse(&target).unwrap();
-        Ok(url)
+        let url = Url::parse(&target.target_url).unwrap();
+        Ok(TargetInfo {
+            url,
+            host_is_target: target.host_is_target,
+        })
     }
 }
 
@@ -167,7 +154,8 @@ async fn handle_request(mut request: Request<Body>) -> Result<Response<Body>, Er
         track_request_time(now.elapsed().as_secs_f64(), "production");
         return Ok(res);
     }
-    let mut target = target.unwrap();
+    let target_info = target.unwrap();
+    let mut target = target_info.url;
     // Check if the request is a websocket upgrade request.
     if hyper_tungstenite::is_upgrade_request(&request) {
         let (response, websocket) = hyper_tungstenite::upgrade(&mut request, None)?;
@@ -188,17 +176,15 @@ async fn handle_request(mut request: Request<Body>) -> Result<Response<Body>, Er
         headers.remove("X-Forwarded-For");
         headers.remove("X-Real-IP");
         headers.remove("X-Forwarded-Proto");
-        headers.remove("X-Forwarded-Proto");
+        if target_info.host_is_target {
+            headers.remove("Host");
+        }
         headers.append(
             "X-Forwarded-For",
             HeaderValue::from_str(real_host).expect("Failed to turn host into a header"),
         );
         headers.append(
             "X-Real-IP",
-            HeaderValue::from_str(real_host).expect("Failed to turn host into a header"),
-        );
-        headers.append(
-            "Host",
             HeaderValue::from_str(real_host).expect("Failed to turn host into a header"),
         );
         headers.append(
