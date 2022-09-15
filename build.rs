@@ -5,7 +5,7 @@ use std::{
     io::Write,
 };
 
-static FILES: [&str; 3] = ["429.html", "500.html", "502.html"];
+static FILES: [&str; 3] = ["421.html", "500.html", "502.html"];
 
 fn main() {
     fs::create_dir_all("src/static/minified").unwrap();
