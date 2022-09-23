@@ -4,6 +4,7 @@ use hyper::server::accept::Accept;
 use hyper::server::conn::{AddrIncoming, AddrStream};
 use hyper::server::Builder;
 use hyper::Server;
+use rustls::PrivateKey;
 use std::future::Future;
 use std::pin::Pin;
 use std::sync::Arc;
@@ -169,11 +170,8 @@ fn load_private_key(filename: &str) -> io::Result<rustls::PrivateKey> {
     let mut reader = io::BufReader::new(keyfile);
 
     // Load and return a single private key.
-    let keys = rustls_pemfile::rsa_private_keys(&mut reader)
-        .map_err(|_| error("failed to load private key".into()))?;
-    if keys.len() != 1 {
-        return Err(error("expected a single private key".into()));
-    }
+    let mut keys: Vec<PrivateKey> = rustls_pemfile::pkcs8_private_keys(&mut reader)
+        .map(|mut keys| keys.drain(..).map(PrivateKey).collect())?;
 
-    Ok(rustls::PrivateKey(keys[0].clone()))
+    Ok(keys.remove(0))
 }
