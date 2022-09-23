@@ -2,7 +2,11 @@ use cached::proc_macro::cached;
 use fast_socks5::client::Socks5Stream;
 use futures_util::StreamExt;
 use hyper::service::{make_service_fn, service_fn};
-use hyper::{http::HeaderValue, Body, Request, Response, StatusCode, Uri, client::HttpConnector};
+use hyper::{
+    client::HttpConnector, http::HeaderValue, server::conn::AddrIncoming, Body, Request, Response,
+    StatusCode, Uri,
+};
+use hyper_socks2::SocksConnector;
 use hyper_tungstenite::HyperWebsocket;
 use lazy_static::lazy_static;
 use log::debug;
@@ -10,15 +14,14 @@ use postgrest::Postgrest;
 use prometheus::{
     HistogramOpts, HistogramVec, IntCounter, IntCounterVec, IntGauge, Opts, Registry,
 };
+use reverse_proxy::tls_server::server_from_pem_files;
 use serde::Deserialize;
-use simple_hyper_server_tls::{hyper_from_pem_files, Protocols};
 use std::io;
 use std::str::FromStr;
 use std::time::Instant;
 use std::vec::Vec;
 use tokio::try_join;
 use url::Url;
-use hyper_socks2::SocksConnector;
 
 type Error = Box<dyn std::error::Error + Send + Sync + 'static>;
 
@@ -174,17 +177,12 @@ async fn handle_request(mut request: Request<Body>) -> Result<Response<Body>, Er
         log::debug!("Sending proxy request");
         let request_url = request.uri();
         let mut headers = request.headers().clone();
-        let host_as_header = HeaderValue::from_str(real_host).expect("Failed to turn host into a header");
+        let host_as_header =
+            HeaderValue::from_str(real_host).expect("Failed to turn host into a header");
         if !target_info.btcpay_compat {
             /* With these headers, btcpay ignores X-Forwarded-Proto, I have no idea why */
-            headers.insert(
-                "X-Forwarded-For",
-                host_as_header.clone(),
-            );
-            headers.insert(
-                "X-Real-IP",
-                host_as_header.clone(),
-            );
+            headers.insert("X-Forwarded-For", host_as_header.clone());
+            headers.insert("X-Real-IP", host_as_header.clone());
         }
         headers.insert("Host", host_as_header);
         headers.insert(
@@ -192,17 +190,20 @@ async fn handle_request(mut request: Request<Body>) -> Result<Response<Body>, Er
             HeaderValue::from_str(request_url.scheme_str().unwrap_or("https"))
                 .expect("Invalid URL"),
         );
-        log::debug!("{:#?}", headers);
         target.set_path(request_url.path());
         target.set_query(request_url.query());
-        let mut req = hyper::Request::builder().method(request.method().clone()).uri(target.as_str()).version(hyper::Version::HTTP_11);
+        let mut req = hyper::Request::builder()
+            .method(request.method().clone())
+            .uri(target.as_str())
+            .version(hyper::Version::HTTP_11);
         *req.headers_mut().unwrap() = headers.clone();
-        let req = req.body(request.into_body()).expect("Failed to construct request");
+        let req = req
+            .body(request.into_body())
+            .expect("Failed to construct request");
 
         let res = HYPER_CLIENT.request(req).await;
         match res {
             Ok(res) => {
-                log::debug!("Worked!");
                 let mut final_response = Response::new(Body::from(""));
                 *final_response.status_mut() = res.status();
                 track_status_code(res.status().as_u16().into(), "production");
@@ -217,7 +218,6 @@ async fn handle_request(mut request: Request<Body>) -> Result<Response<Body>, Er
                 Ok(final_response)
             }
             Err(err) => {
-                log::debug!("Failed!");
                 eprintln!("{:#?}", err);
                 let mut res = Response::new(Body::from(include_str!("static/minified/502.html")));
                 *res.status_mut() = StatusCode::BAD_GATEWAY;
@@ -304,9 +304,11 @@ async fn main() -> Result<(), Error> {
     log::debug!("Binding to address");
     println!("Proxy listening on https://{}", proxy_addr);
     println!("Metrics listening on http://{}", metrics_addr);
+    let proy_listener = AddrIncoming::bind(&proxy_addr)?;
     let proxy_service =
         make_service_fn(|_| async { Ok::<_, io::Error>(service_fn(handle_request)) });
-    let proxy_server = hyper_from_pem_files(chain_path, privkey_path, Protocols::ALL, &proxy_addr)
+    let proxy_server = server_from_pem_files(chain_path, privkey_path, proy_listener)
+        .await
         .expect("Failed to create server from given TLS files")
         .serve(proxy_service);
     let metrics_service =
