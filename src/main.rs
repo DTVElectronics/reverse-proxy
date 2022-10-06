@@ -1,6 +1,5 @@
 use cached::proc_macro::cached;
 use fast_socks5::client::Socks5Stream;
-use futures_util::StreamExt;
 use hyper::service::{make_service_fn, service_fn};
 use hyper::{
     client::HttpConnector, http::HeaderValue, server::conn::AddrIncoming, Body, Request, Response,
@@ -271,15 +270,11 @@ async fn serve_websocket(
     )
     .await?;
     let socket = socks_client.get_socket();
-    let (origin_server, websocket) =
+    let ((mut origin_stream, _), mut client_stream) =
         try_join!(tokio_tungstenite::client_async(target, socket), websocket)?;
-    let (write_target, read_target) = origin_server.0.split();
-    let (write_client, read_client) = websocket.split();
     CONNECTED_CLIENTS.inc();
-    let forwarding_result = try_join!(
-        read_client.forward(write_target),
-        read_target.forward(write_client)
-    );
+    let forwarding_result =
+        tokio::io::copy_bidirectional(origin_stream.get_mut(), client_stream.get_mut()).await;
     CONNECTED_CLIENTS.dec();
     if let Err(forwarding_error) = forwarding_result {
         eprintln!("{:#?}", forwarding_error);
