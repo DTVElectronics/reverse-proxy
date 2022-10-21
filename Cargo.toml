@@ -6,7 +6,7 @@ edition = "2021"
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 
 [dependencies]
-cached = { version = "0.38.0" }
+cached = { version = "0.39.0" }
 dotenv = "0.15.0"
 fast-socks5 = "0.8.0"
 futures-util = "0.3.23"
