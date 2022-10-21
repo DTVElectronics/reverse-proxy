@@ -115,17 +115,12 @@ struct TargetInfo {
 }
 
 async fn get_target(host: String) -> Result<TargetInfo, String> {
-    let target = get_target_sub(host).await;
-    if let Err(err) = target {
-        Err(err)
-    } else {
-        let target = target.unwrap();
-        let url = Url::parse(&target.target_url).unwrap();
-        Ok(TargetInfo {
-            url,
-            btcpay_compat: target.btcpay_compat,
-        })
-    }
+    let target = get_target_sub(host).await?;
+    let url = Url::parse(&target.target_url).unwrap();
+    Ok(TargetInfo {
+        url,
+        btcpay_compat: target.btcpay_compat,
+    })
 }
 
 /// Handle a HTTP or WebSocket request.
