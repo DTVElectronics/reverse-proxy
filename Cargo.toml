@@ -10,7 +10,7 @@ cached = { version = "0.39.0" }
 dotenv = "0.15.0"
 fast-socks5 = "0.8.1"
 futures-util = "0.3.23"
-hyper = { version = "0.14.20", features = ["server", "http1", "http2"] }
+hyper = { version = "0.14.22", features = ["server", "http1", "http2"] }
 hyper-socks2 = { version = "0.6.0", default_features = false }
 hyper-tungstenite = "0.8.1"
 lazy_static = "1.4.0"
