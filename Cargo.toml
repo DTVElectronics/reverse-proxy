@@ -9,7 +9,7 @@ edition = "2021"
 cached = { version = "0.39.0" }
 dotenv = "0.15.0"
 fast-socks5 = "0.8.1"
-futures-util = "0.3.23"
+futures-util = "0.3.25"
 hyper = { version = "0.14.23", features = ["server", "http1", "http2"] }
 hyper-socks2 = { version = "0.6.0", default_features = false }
 hyper-tungstenite = "0.8.1"
